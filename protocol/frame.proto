@@ -1,0 +1,232 @@
+syntax = "proto3";
+
+package veyu.v1;
+
+option java_package = "app.veyu.protocol.v1";
+option java_multiple_files = true;
+
+// The client-to-gateway wire format.
+//
+// One TLS WebSocket per device, on 443, straight to a gateway the client was
+// told to use by endpoint discovery -- no reverse proxy in front of it, because
+// proxying long connections doubles the connection count on the way in.
+//
+// Every message on that socket is one Frame, as a binary WebSocket message.
+// WebSocket already delimits messages, so there is no length prefix here.
+//
+// Compression is off. The payloads that matter are ciphertext, which is
+// incompressible, so permessage-deflate would burn CPU on every message to save
+// nothing. Turn it off explicitly; some stacks enable it by default.
+
+message Frame {
+  // Assigned by whichever side sends a request, echoed on the reply. Lets the
+  // client match acknowledgements without ordering assumptions, because
+  // responses do not necessarily come back in the order requests went out.
+  uint64 id = 1;
+
+  oneof payload {
+    Hello hello = 10;
+    HelloAck hello_ack = 11;
+    Ping ping = 12;
+    Pong pong = 13;
+    Failure failure = 14;
+
+    SendMessage send = 20;
+    SendAck send_ack = 21;
+    Deliver deliver = 22;
+    DeliveryAck delivery_ack = 23;
+
+    SyncRequest sync = 30;
+    SyncResponse sync_response = 31;
+
+    ReadReceipt read_receipt = 40;
+    Typing typing = 41;
+  }
+}
+
+// ---------------------------------------------------------------- session
+
+message Hello {
+  // The gateway verifies this by itself. It holds no database connection, so
+  // anything it needs to authorise a socket has to be inside the token.
+  string access_token = 1;
+
+  // Which of this account's devices is connecting. libsignal addresses a
+  // session as (account, device), and the product allows two devices.
+  uint32 device_id = 2;
+
+  // Bumped when the frame format changes incompatibly. The gateway refuses
+  // rather than guesses.
+  uint32 protocol_version = 3;
+
+  // Present when resuming after a drop, so the gateway can decide whether the
+  // client needs a full sync or just the tail.
+  optional ResumeState resume = 4;
+}
+
+message ResumeState {
+  // The highest envelope this device has stored, as a millisecond timestamp.
+  // Paired with the per-conversation cursors in a SyncRequest.
+  int64 last_envelope_at = 1;
+}
+
+message HelloAck {
+  // Server time, so the client can correct a skewed local clock before it
+  // stamps anything.
+  int64 server_time_ms = 1;
+
+  // How long the client may stay silent before the gateway considers the
+  // socket dead. The client pings at a fraction of this; the server owns the
+  // number so it can be tuned under load without shipping an app release.
+  uint32 heartbeat_interval_ms = 2;
+
+  // True when this device has messages waiting that it has not synced.
+  bool sync_required = 3;
+}
+
+message Ping {
+  int64 client_time_ms = 1;
+}
+
+message Pong {
+  int64 client_time_ms = 1;
+  int64 server_time_ms = 2;
+}
+
+message Failure {
+  // Stable, machine-readable. Human text is the client's job, in the client's
+  // language -- the server does not know which of the five it should use.
+  string code = 1;
+  string detail = 2;
+  // True when retrying the same frame could succeed.
+  bool retryable = 3;
+}
+
+// ---------------------------------------------------------------- sending
+
+message SendMessage {
+  bytes conversation_id = 1;
+
+  // Assigned by the client and stable across retries. A reconnect mid-send is
+  // ordinary, so the server deduplicates on this rather than creating a second
+  // message.
+  bytes client_message_id = 2;
+
+  MessageKind kind = 3;
+
+  oneof content {
+    // A direct conversation: one ciphertext per recipient device, produced by
+    // the sender. The server cannot make these itself -- it has no key -- so
+    // the fan-out is computed on the device and uploaded together.
+    EncryptedContent encrypted = 4;
+
+    // A group conversation, which is deliberately not encrypted so that
+    // history, search and moderation remain possible.
+    bytes plaintext = 5;
+  }
+}
+
+message EncryptedContent {
+  repeated DeviceCiphertext copies = 1;
+}
+
+message DeviceCiphertext {
+  bytes target_account_id = 1;
+  uint32 target_device_id = 2;
+  // libsignal's CiphertextMessageType: 2 is a ratchet message, 3 opens a
+  // session.
+  uint32 ciphertext_type = 3;
+  bytes ciphertext = 4;
+}
+
+// Sent once the message is durable, and before it has been pushed to anyone.
+// Fan-out is a latency optimisation; delivery is guaranteed by the sync
+// protocol, not by the push.
+message SendAck {
+  bytes client_message_id = 1;
+  uint64 seq = 2;
+  int64 created_at_ms = 3;
+}
+
+// ---------------------------------------------------------------- receiving
+
+message Deliver {
+  bytes conversation_id = 1;
+  uint64 seq = 2;
+  bytes sender_account_id = 3;
+  uint32 sender_device_id = 4;
+  MessageKind kind = 5;
+  int64 created_at_ms = 6;
+
+  oneof content {
+    // Addressed to this device specifically.
+    DeviceCiphertext encrypted = 7;
+    bytes plaintext = 8;
+  }
+}
+
+// The client confirms it has stored the message. Until this arrives the
+// message stays in the device's sync window.
+message DeliveryAck {
+  bytes conversation_id = 1;
+  uint64 seq = 2;
+}
+
+// ---------------------------------------------------------------- sync
+
+message SyncRequest {
+  repeated ConversationCursor cursors = 1;
+
+  // Everything not covered by a cursor, newer than this. Required, and not an
+  // optimisation: message storage is partitioned by day, and a read that
+  // carries no date cannot be pruned to a partition, so it probes the local
+  // index of every one of them. The client knows the timestamp of its last
+  // message, so supplying it costs nothing.
+  int64 since_ms = 2;
+
+  uint32 limit = 3;
+}
+
+message ConversationCursor {
+  bytes conversation_id = 1;
+  uint64 after_seq = 2;
+}
+
+message SyncResponse {
+  repeated Deliver messages = 1;
+  // True when the limit was reached and another request is needed. Paging is
+  // by cursor, never by offset: an offset shifts under concurrent writes and
+  // silently repeats or skips rows.
+  bool has_more = 2;
+}
+
+// ---------------------------------------------------------------- signals
+
+// Read state is a cursor, not a per-message flag: one row per member holding
+// the highest sequence read, moved forward with GREATEST so that receipts
+// arriving out of order cannot move it backwards.
+message ReadReceipt {
+  bytes conversation_id = 1;
+  uint64 through_seq = 2;
+}
+
+// Lowest priority traffic in the system. Dropped first under load, and never
+// stored.
+message Typing {
+  bytes conversation_id = 1;
+  bool active = 2;
+}
+
+// ---------------------------------------------------------------- shared
+
+enum MessageKind {
+  MESSAGE_KIND_UNSPECIFIED = 0;
+  MESSAGE_KIND_TEXT = 1;
+  MESSAGE_KIND_IMAGE = 2;
+  MESSAGE_KIND_AUDIO = 3;
+  MESSAGE_KIND_VIDEO = 4;
+  // The body is a reference to object storage plus the key material needed to
+  // read it; the bytes themselves never pass through this socket.
+  MESSAGE_KIND_ATTACHMENT = 5;
+  MESSAGE_KIND_SYSTEM = 6;
+}
