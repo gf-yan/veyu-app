@@ -25,8 +25,8 @@ message Frame {
   uint64 id = 1;
 
   oneof payload {
-    Hello hello = 10;
-    HelloAck hello_ack = 11;
+    Connect connect = 10;
+    Connected connected = 11;
     Ping ping = 12;
     Pong pong = 13;
     Failure failure = 14;
@@ -46,7 +46,10 @@ message Frame {
 
 // ---------------------------------------------------------------- session
 
-message Hello {
+// Sent once, first, before anything else on the socket. Authenticates the
+// device and settles the parameters the rest of the session runs under.
+
+message Connect {
   // The gateway verifies this by itself. It holds no database connection, so
   // anything it needs to authorise a socket has to be inside the token.
   string access_token = 1;
@@ -70,7 +73,7 @@ message ResumeState {
   int64 last_envelope_at = 1;
 }
 
-message HelloAck {
+message Connected {
   // Server time, so the client can correct a skewed local clock before it
   // stamps anything.
   int64 server_time_ms = 1;
