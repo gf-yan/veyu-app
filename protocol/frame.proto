@@ -103,16 +103,45 @@ message Failure {
   string detail = 2;
   // True when retrying the same frame could succeed.
   bool retryable = 3;
+  // Present with code DEVICE_MISMATCH: what the sender's fan-out got wrong.
+  DeviceMismatch device_mismatch = 4;
+}
+
+// An encrypted send must carry exactly one ciphertext for every device in the
+// conversation other than the sending one. When it does not, the send is
+// refused with this, and the client corrects its device list and sessions and
+// sends again under the same client_message_id.
+message DeviceMismatch {
+  // Devices that exist and got no ciphertext. Fetch their prekeys, open a
+  // session, encrypt for them too.
+  repeated DeviceAddress missing = 1;
+  // Ciphertexts for devices that do not exist, or not in this conversation.
+  // Drop the session.
+  repeated DeviceAddress extra = 2;
+  // Devices that exist under the same id but were registered again -- a
+  // reinstall. The session the sender holds is with a device that is gone, so
+  // the recipient could never decrypt it. Discard the session and start over.
+  repeated DeviceAddress stale = 3;
+}
+
+message DeviceAddress {
+  uint64 account_id = 1;
+  uint32 device_id = 2;
 }
 
 // ---------------------------------------------------------------- sending
 
 message SendMessage {
-  bytes conversation_id = 1;
+  uint64 conversation_id = 1;
 
-  // Assigned by the client and stable across retries. A reconnect mid-send is
-  // ordinary, so the server deduplicates on this rather than creating a second
-  // message.
+  // Sixteen random bytes, assigned by the client and stable across retries. A
+  // reconnect mid-send is ordinary, so the server deduplicates on this rather
+  // than creating a second message: a retry of a send that did go through gets
+  // the original acknowledgement back, same seq, same timestamp.
+  //
+  // The server remembers an id for 24 hours. A send still unacknowledged after
+  // that is abandoned, not retried; a retry past the window would be stored as
+  // a second message.
   bytes client_message_id = 2;
 
   MessageKind kind = 3;
@@ -134,12 +163,17 @@ message EncryptedContent {
 }
 
 message DeviceCiphertext {
-  bytes target_account_id = 1;
+  uint64 target_account_id = 1;
   uint32 target_device_id = 2;
   // libsignal's CiphertextMessageType: 2 is a ratchet message, 3 opens a
   // session.
   uint32 ciphertext_type = 3;
   bytes ciphertext = 4;
+  // The registration id of the device the sender's session is with. A device
+  // id is reused when an app is reinstalled; the registration id is not, so
+  // this is how the server notices a ciphertext addressed to a device that no
+  // longer exists under that id. Required on send, absent on delivery.
+  uint32 target_registration_id = 5;
 }
 
 // Sent once the message is durable, and before it has been pushed to anyone.
@@ -154,9 +188,9 @@ message SendAck {
 // ---------------------------------------------------------------- receiving
 
 message Deliver {
-  bytes conversation_id = 1;
+  uint64 conversation_id = 1;
   uint64 seq = 2;
-  bytes sender_account_id = 3;
+  uint64 sender_account_id = 3;
   uint32 sender_device_id = 4;
   MessageKind kind = 5;
   int64 created_at_ms = 6;
@@ -171,7 +205,7 @@ message Deliver {
 // The client confirms it has stored the message. Until this arrives the
 // message stays in the device's sync window.
 message DeliveryAck {
-  bytes conversation_id = 1;
+  uint64 conversation_id = 1;
   uint64 seq = 2;
 }
 
@@ -191,7 +225,7 @@ message SyncRequest {
 }
 
 message ConversationCursor {
-  bytes conversation_id = 1;
+  uint64 conversation_id = 1;
   uint64 after_seq = 2;
 }
 
@@ -209,14 +243,14 @@ message SyncResponse {
 // the highest sequence read, moved forward with GREATEST so that receipts
 // arriving out of order cannot move it backwards.
 message ReadReceipt {
-  bytes conversation_id = 1;
+  uint64 conversation_id = 1;
   uint64 through_seq = 2;
 }
 
 // Lowest priority traffic in the system. Dropped first under load, and never
 // stored.
 message Typing {
-  bytes conversation_id = 1;
+  uint64 conversation_id = 1;
   bool active = 2;
 }
 
