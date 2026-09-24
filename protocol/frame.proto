@@ -187,8 +187,13 @@ message SendAck {
 
 // ---------------------------------------------------------------- receiving
 
+// A message, as pushed while the device is connected and as returned by sync.
+// The same message can arrive both ways, and a push can arrive after the sync
+// that already returned it; the client keeps one copy per (conversation, seq).
 message Deliver {
   uint64 conversation_id = 1;
+  // Display order within the conversation. Not the sync position: see
+  // ConversationCursor.
   uint64 seq = 2;
   uint64 sender_account_id = 3;
   uint32 sender_device_id = 4;
@@ -200,6 +205,12 @@ message Deliver {
     DeviceCiphertext encrypted = 7;
     bytes plaintext = 8;
   }
+
+  // The sender's id for the message. In a rare failure -- a send that did
+  // reach the server but whose acknowledgement was lost, retried long enough
+  // afterwards to be stamped again -- one message is stored twice under two
+  // sequence numbers. Clients show one message per (sender, client_message_id).
+  bytes client_message_id = 9;
 }
 
 // The client confirms it has stored the message. Until this arrives the
@@ -211,30 +222,59 @@ message DeliveryAck {
 
 // ---------------------------------------------------------------- sync
 
+// Everything stored for this device since it last synced, conversation by
+// conversation.
+//
+// The client sends back the cursors from its previous SyncResponse, one per
+// conversation it knows. Conversations it has no cursor for -- new ones, or all
+// of them on a new device -- are synced from the start of retention (from
+// joining, for a group).
+//
+// Push is not a substitute. A pushed message is stored and shown, but it never
+// moves a cursor: pushes are best effort and can arrive out of order, and a
+// cursor moved past a message that has not arrived yet would skip it for good.
 message SyncRequest {
   repeated ConversationCursor cursors = 1;
 
-  // Everything not covered by a cursor, newer than this. Required, and not an
-  // optimisation: message storage is partitioned by day, and a read that
-  // carries no date cannot be pruned to a partition, so it probes the local
-  // index of every one of them. The client knows the timestamp of its last
-  // message, so supplying it costs nothing.
-  int64 since_ms = 2;
+  // Replaced by the time carried inside each cursor.
+  reserved 2;
+  reserved "since_ms";
 
+  // Messages per response, at most 500. The server may return fewer, to keep
+  // a response to a reasonable size.
   uint32 limit = 3;
 }
 
 message ConversationCursor {
   uint64 conversation_id = 1;
-  uint64 after_seq = 2;
+
+  reserved 2;
+  reserved "after_seq";
+
+  // Opaque. Returned by the server, stored by the client, sent back unchanged.
+  //
+  // It is a position in the order messages were *stored*, not their display
+  // seq. Sequence numbers are taken before a message reaches the broker, and
+  // two sends racing through different gateways can arrive in the other order:
+  // a cursor at seq 10 would then skip a seq 9 stored a moment later. Storage
+  // order has no such race, so nothing stored after a cursor can be behind it.
+  bytes position = 3;
 }
 
 message SyncResponse {
+  // In storage order within each conversation. Sort by seq for display.
   repeated Deliver messages = 1;
-  // True when the limit was reached and another request is needed. Paging is
-  // by cursor, never by offset: an offset shifts under concurrent writes and
-  // silently repeats or skips rows.
+
+  // True when another request is needed. Paging is by cursor, never by
+  // offset: an offset shifts under concurrent writes and silently repeats or
+  // skips rows.
   bool has_more = 2;
+
+  // Where each conversation that was read now stands. Store these and send
+  // them next time; a conversation that returned nothing for this device can
+  // still have moved -- a direct message encrypted only for the user's other
+  // device -- and its cursor has to move with it.
+  repeated ConversationCursor cursors = 3;
 }
 
 // ---------------------------------------------------------------- signals
