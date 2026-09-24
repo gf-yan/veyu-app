@@ -50,8 +50,8 @@ message Frame {
 // device and settles the parameters the rest of the session runs under.
 
 message Connect {
-  // The gateway verifies this by itself. It holds no database connection, so
-  // anything it needs to authorise a socket has to be inside the token.
+  // The gateway verifies this by itself, with no lookup: anything it needs to
+  // accept the socket is inside the token.
   string access_token = 1;
 
   // Which of this account's devices is connecting. libsignal addresses a
