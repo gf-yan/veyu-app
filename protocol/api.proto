@@ -1,0 +1,83 @@
+syntax = "proto3";
+
+package veyu.v1;
+
+import "frame.proto";
+
+option java_package = "app.veyu.protocol.v1";
+option java_multiple_files = true;
+
+// The api's HTTP interface: signing in, access tokens, and an account's devices.
+//
+// Every request and response body is one of these messages as binary protobuf,
+// Content-Type application/x-protobuf. A request that fails gets a non-2xx
+// status and a Failure (frame.proto) as its body, with the same error codes the
+// gateway uses.
+//
+// Endpoints that act for a device take its access token as
+// "Authorization: Bearer <token>".
+//
+// How a device stays signed in: signing in once gives it a device credential,
+// kept in the platform's secure storage. The credential gets access tokens,
+// which last minutes and are what the gateway and the api accept. It is
+// never rotated, so a lost response can never strand a device; it stops
+// working only when the device is removed or the account is disabled, and
+// then the device signs in again.
+
+// POST /v1/sign-in/apple -> SignedIn
+//
+// Signs in with Apple, creating the account the first time. Registers the
+// device, or -- when the same device (by identity key) signs in again, as a
+// retry after a lost response would -- gives it a new credential instead of a
+// second registration.
+message AppleSignInRequest {
+  // The identity token Sign in with Apple returned to the app.
+  string identity_token = 1;
+  // The nonce the app generated for this sign-in; Apple was given its SHA-256,
+  // hex, and put that in the identity token. Proves the token was made for
+  // this request, so a leaked one cannot be replayed.
+  string nonce = 2;
+  NewDevice device = 3;
+  // When the account already has as many devices as it may, the sign-in is
+  // refused with DEVICE_LIMIT and the list; the app asks which to replace and
+  // signs in again naming it. 0 when not replacing.
+  uint32 replace_device_id = 4;
+}
+
+message NewDevice {
+  // libsignal's registration id for this install, 1..16380.
+  uint32 registration_id = 1;
+  // libsignal's serialized identity public key, 33 bytes.
+  bytes identity_key = 2;
+  DevicePlatform platform = 3;
+  // What the user calls this device, up to 64 characters.
+  string name = 4;
+}
+
+message SignedIn {
+  uint64 account_id = 1;
+  uint32 device_id = 2;
+  // Keep in secure storage, never in logs; it gets this device's access tokens.
+  bytes device_credential = 3;
+  AccessToken access_token = 4;
+}
+
+message AccessToken {
+  string token = 1;
+  int64 expires_at_ms = 2;
+}
+
+// POST /v1/tokens -> AccessToken
+message TokenRequest {
+  uint64 account_id = 1;
+  uint32 device_id = 2;
+  bytes device_credential = 3;
+}
+
+// GET /v1/devices -> DeviceList (frame.proto)
+//
+// DELETE /v1/devices/{device_id} -> 204
+//
+// Removes a device of the caller's account, the calling one included. Its
+// credential stops working at once; its socket closes when its access token
+// expires, and messages sent after the removal are not encrypted for it.

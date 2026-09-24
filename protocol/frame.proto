@@ -30,6 +30,8 @@ message Frame {
     Ping ping = 12;
     Pong pong = 13;
     Failure failure = 14;
+    Renew renew = 15;
+    Renewed renewed = 16;
 
     SendMessage send = 20;
     SendAck send_ack = 21;
@@ -51,7 +53,7 @@ message Frame {
 
 message Connect {
   // The gateway verifies this by itself, with no lookup: anything it needs to
-  // accept the socket is inside the token.
+  // accept the socket is inside the token. The api issues it; see api.proto.
   string access_token = 1;
 
   // Which of this account's devices is connecting. libsignal addresses a
@@ -90,6 +92,24 @@ message Connected {
   // carrying its own copy. The server owns them so that one definition applies
   // to every client version and a limit can change without an app release.
   Limits limits = 4;
+
+  // When the gateway closes this socket, with TOKEN_EXPIRED, unless it is
+  // renewed first: the access token's expiry. A device removed from its
+  // account can get no new token, so its socket ends here too.
+  int64 session_expires_at_ms = 5;
+}
+
+// Extends the session with a new access token for the same account and device,
+// so a long-lived socket need not reconnect every time its token expires. Send
+// it a little before Connected.session_expires_at_ms (or the last
+// Renewed.session_expires_at_ms). Refused with TOKEN_INVALID, and the socket
+// closed, if the token is for anyone else.
+message Renew {
+  string access_token = 1;
+}
+
+message Renewed {
+  int64 session_expires_at_ms = 1;
 }
 
 message Limits {
@@ -127,6 +147,9 @@ message Failure {
   bool retryable = 3;
   // Present with code DEVICE_MISMATCH: what the sender's fan-out got wrong.
   DeviceMismatch device_mismatch = 4;
+  // Present with code DEVICE_LIMIT: the account's devices, one of which the
+  // sign-in may name to replace.
+  DeviceList devices = 5;
 }
 
 // An encrypted send must carry exactly one ciphertext for every device in the
@@ -331,8 +354,8 @@ enum ErrorCode {
 
   // The session.
   ERROR_CODE_PROTOCOL_VERSION = 10;     // Connect.protocol_version is not one this server speaks
-  ERROR_CODE_TOKEN_INVALID = 11;        // sign in again
-  ERROR_CODE_TOKEN_EXPIRED = 12;        // refresh the token and reconnect
+  ERROR_CODE_TOKEN_INVALID = 11;        // get a new access token; not something retrying the same one fixes
+  ERROR_CODE_TOKEN_EXPIRED = 12;        // get a new access token, then Renew or reconnect
   ERROR_CODE_NOT_CONNECTED = 13;        // send Connect first
   ERROR_CODE_ALREADY_CONNECTED = 14;    // one Connect per socket
   ERROR_CODE_CONNECT_TIMEOUT = 15;      // no valid Connect in time; the socket is closed
@@ -351,6 +374,35 @@ enum ErrorCode {
   ERROR_CODE_OVERLOADED = 32;
   ERROR_CODE_TOO_MANY_IN_FLIGHT = 33;
   ERROR_CODE_SYNC_IN_PROGRESS = 34;
+
+  // Signing in, tokens and devices (the api).
+  ERROR_CODE_SIGN_IN_REJECTED = 40;     // the identity provider's token did not verify, or was for another sign-in
+  ERROR_CODE_DEVICE_LIMIT = 41;         // see Failure.devices; sign in again naming one to replace
+  ERROR_CODE_CREDENTIAL_REJECTED = 42;  // the device credential is not valid, or the device was removed; sign in again
+  ERROR_CODE_NO_SUCH_DEVICE = 43;
+}
+
+// An account's devices, as the api lists them.
+message DeviceList {
+  repeated DeviceInfo devices = 1;
+  // How many an account may have.
+  uint32 max_devices = 2;
+}
+
+message DeviceInfo {
+  uint32 device_id = 1;
+  DevicePlatform platform = 2;
+  // Chosen by the user when the device signed in, to tell devices apart.
+  string name = 3;
+  int64 created_at_ms = 4;
+  // When the device last got an access token; to within about an hour.
+  int64 last_seen_at_ms = 5;
+}
+
+enum DevicePlatform {
+  DEVICE_PLATFORM_UNSPECIFIED = 0;
+  DEVICE_PLATFORM_IOS = 1;
+  DEVICE_PLATFORM_ANDROID = 2;
 }
 
 enum MessageKind {
