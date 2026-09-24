@@ -85,6 +85,26 @@ message Connected {
 
   // True when this device has messages waiting that it has not synced.
   bool sync_required = 3;
+
+  // The limits this server enforces, which the client respects instead of
+  // carrying its own copy. The server owns them so that one definition applies
+  // to every client version and a limit can change without an app release.
+  Limits limits = 4;
+}
+
+message Limits {
+  // Largest plaintext body, or largest single ciphertext, in bytes.
+  uint32 max_body_bytes = 1;
+  // Most ciphertexts one encrypted send may carry.
+  uint32 max_ciphertexts = 2;
+  // Sends the client may have outstanding on one socket before waiting for
+  // acknowledgements; more are refused with TOO_MANY_IN_FLIGHT.
+  uint32 max_sends_in_flight = 3;
+  // Largest SyncRequest.limit honoured.
+  uint32 max_sync_limit = 4;
+  // How long the server remembers a client_message_id. A send still
+  // unacknowledged after this long is abandoned, not retried.
+  uint64 dedupe_window_ms = 5;
 }
 
 message Ping {
@@ -97,9 +117,11 @@ message Pong {
 }
 
 message Failure {
-  // Stable, machine-readable. Human text is the client's job, in the client's
-  // language -- the server does not know which of the five it should use.
-  string code = 1;
+  // Stable and machine-readable. Human text is the client's job, in the
+  // client's language -- the server does not know which of the five it should
+  // use.
+  ErrorCode code = 1;
+  // For logs and bug reports, in English. Never shown to a user, never parsed.
   string detail = 2;
   // True when retrying the same frame could succeed.
   bool retryable = 3;
@@ -295,6 +317,41 @@ message Typing {
 }
 
 // ---------------------------------------------------------------- shared
+
+// Every reason the server refuses a frame. One list, shared by server and
+// client, so a code can never be sent that the client has no case for.
+// Whether a retry can succeed is carried separately, in Failure.retryable.
+enum ErrorCode {
+  ERROR_CODE_UNSPECIFIED = 0;
+
+  // The frame itself.
+  ERROR_CODE_FRAME_MALFORMED = 1;       // not a readable Frame; the socket is closed
+  ERROR_CODE_INVALID = 2;               // readable, but breaks a rule; detail says which
+  ERROR_CODE_NOT_IMPLEMENTED = 3;       // a frame type this server does not handle yet
+
+  // The session.
+  ERROR_CODE_PROTOCOL_VERSION = 10;     // Connect.protocol_version is not one this server speaks
+  ERROR_CODE_TOKEN_INVALID = 11;        // sign in again
+  ERROR_CODE_TOKEN_EXPIRED = 12;        // refresh the token and reconnect
+  ERROR_CODE_NOT_CONNECTED = 13;        // send Connect first
+  ERROR_CODE_ALREADY_CONNECTED = 14;    // one Connect per socket
+  ERROR_CODE_CONNECT_TIMEOUT = 15;      // no valid Connect in time; the socket is closed
+
+  // Sending.
+  ERROR_CODE_NOT_A_MEMBER = 20;         // also returned for a conversation that does not exist
+  ERROR_CODE_BLOCKED = 21;              // does not say which side blocked
+  ERROR_CODE_ACCOUNT_INACTIVE = 22;
+  ERROR_CODE_WRONG_CONTENT = 23;        // plaintext into a direct conversation, or ciphertext into a group
+  ERROR_CODE_DEVICE_MISMATCH = 24;      // see Failure.device_mismatch
+  ERROR_CODE_NO_RECIPIENT_DEVICES = 25; // nobody else in the conversation has a device
+
+  // Capacity and availability; all retryable, with backoff.
+  ERROR_CODE_UNAVAILABLE = 30;
+  ERROR_CODE_NOT_DURABLE = 31;          // the broker did not confirm; retry under the same client_message_id
+  ERROR_CODE_OVERLOADED = 32;
+  ERROR_CODE_TOO_MANY_IN_FLIGHT = 33;
+  ERROR_CODE_SYNC_IN_PROGRESS = 34;
+}
 
 enum MessageKind {
   MESSAGE_KIND_UNSPECIFIED = 0;
