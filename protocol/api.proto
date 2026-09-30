@@ -52,6 +52,12 @@ message NewDevice {
   DevicePlatform platform = 3;
   // What the user calls this device, up to 64 characters.
   string name = 4;
+  // Required. A device is registered with the keys a peer needs to start a
+  // session with it: every encrypted send must carry a copy for every device,
+  // so a device nobody could encrypt for would block all messages to its
+  // account. Persist the private halves before signing in.
+  SignedPreKey signed_pre_key = 5;
+  SignedPreKey kyber_pre_key = 6;
 }
 
 message SignedIn {
@@ -81,3 +87,75 @@ message TokenRequest {
 // Removes a device of the caller's account, the calling one included. Its
 // credential stops working at once; its socket closes when its access token
 // expires, and messages sent after the removal are not encrypted for it.
+
+// ---------------------------------------------------------------- key directory
+//
+// What a peer needs to open a libsignal session with each of an account's
+// devices. The server never holds a private key; what it guards is that it
+// never hands out the wrong key, or the same one-time key twice:
+//
+//   - Key ids only ever rise, per device and per kind. A reused id could name a
+//     key whose private half the device has already discarded.
+//   - A one-time prekey is handed out once, then deleted.
+//   - An exhausted pool is not a failure: the bundle comes without a one-time
+//     prekey, and the session still opens.
+
+// A signed prekey: the EC one (33-byte public key, 0x05 type byte) or the
+// Kyber1024 one (1569 bytes, 0x08), each signed by the identity key.
+message SignedPreKey {
+  uint32 key_id = 1;
+  bytes public_key = 2;
+  bytes signature = 3;
+}
+
+message OneTimePreKey {
+  uint32 key_id = 1;
+  // 33 bytes, 0x05 type byte.
+  bytes public_key = 2;
+}
+
+// PUT /v1/keys/signed -> KeyStatus
+//
+// Replaces this device's signed prekey, Kyber prekey, or both. Each id must be
+// above the one it replaces.
+message SignedPreKeys {
+  SignedPreKey signed_pre_key = 1;
+  SignedPreKey kyber_pre_key = 2;
+}
+
+// POST /v1/keys/one-time -> KeyStatus
+//
+// Adds one-time prekeys to this device's pool, ids rising and above every id
+// uploaded before. Refused with INVALID if the pool would exceed its size.
+message OneTimePreKeys {
+  repeated OneTimePreKey keys = 1;
+}
+
+// GET /v1/keys -> KeyStatus: this device's keys, to decide what to upload.
+message KeyStatus {
+  // One-time prekeys left in the pool. Top it up well before it empties.
+  uint32 one_time_pre_keys = 1;
+  uint32 max_one_time_pre_keys = 2;
+  uint32 signed_pre_key_id = 3;
+  uint32 kyber_pre_key_id = 4;
+  // The highest one-time prekey id ever uploaded; new ones must be above it.
+  uint32 last_one_time_pre_key_id = 5;
+}
+
+// GET /v1/keys/{account_id} -> PreKeyBundles
+//
+// A bundle for every device of an account, each taking one of its one-time
+// prekeys. An account with no devices gets an empty list.
+message PreKeyBundles {
+  repeated PreKeyBundle bundles = 1;
+}
+
+message PreKeyBundle {
+  uint32 device_id = 1;
+  uint32 registration_id = 2;
+  bytes identity_key = 3;
+  SignedPreKey signed_pre_key = 4;
+  SignedPreKey kyber_pre_key = 5;
+  // Absent when the pool is empty.
+  OneTimePreKey one_time_pre_key = 6;
+}
