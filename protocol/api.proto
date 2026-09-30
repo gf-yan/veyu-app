@@ -90,6 +90,17 @@ message Gateways {
   repeated string urls = 1;
 }
 
+// GET /v1/settings -> Settings
+// PUT /v1/settings (Settings) -> Settings
+//
+// The account's settings. A PUT changes only the fields it sets, so a client
+// that predates a field never resets it.
+message Settings {
+  // Whether the other person in a direct conversation sees how far you have
+  // read. Off, you do not see theirs either. On unless turned off.
+  optional bool read_receipts = 1;
+}
+
 // GET /v1/devices -> DeviceList (frame.proto)
 //
 // DELETE /v1/devices/{device_id} -> 204

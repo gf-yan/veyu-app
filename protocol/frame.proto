@@ -320,23 +320,40 @@ message SyncResponse {
   // still have moved -- a direct message encrypted only for the user's other
   // device -- and its cursor has to move with it.
   repeated ConversationCursor cursors = 3;
+
+  // How far people have read, in every conversation of the account: its own
+  // position, which its other devices set; and in a direct conversation, the
+  // other person's, when both of them share read receipts (api Settings).
+  repeated ReadReceipt read_positions = 4;
 }
 
 // ---------------------------------------------------------------- signals
 
-// Read state is a cursor, not a per-message flag: one row per member holding
-// the highest sequence read, moved forward with GREATEST so that receipts
-// arriving out of order cannot move it backwards.
+// Read state is a position, not a per-message flag: the highest seq a person
+// has read in a conversation, which only moves forward, so receipts arriving
+// out of order cannot move it back.
+//
+// A device sends one when the user has read through a message; nothing is
+// sent back. The server passes it on, as it arrives, to the account's other
+// devices and -- in a direct conversation where both people share read
+// receipts -- to the other person's; everyone else learns it at their next
+// sync, in SyncResponse.read_positions.
 message ReadReceipt {
   uint64 conversation_id = 1;
   uint64 through_seq = 2;
+  // Whose position this is. Set by the server on those it sends; ignored on
+  // those it receives, which are always the sender's own.
+  uint64 account_id = 3;
 }
 
 // Lowest priority traffic in the system. Dropped first under load, and never
-// stored.
+// stored. Direct conversations only: in a group it is refused with INVALID.
 message Typing {
   uint64 conversation_id = 1;
   bool active = 2;
+  // Who is typing. Set by the server on those it sends; ignored on those it
+  // receives.
+  uint64 account_id = 3;
 }
 
 // ---------------------------------------------------------------- shared
