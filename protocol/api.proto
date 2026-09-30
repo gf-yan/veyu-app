@@ -80,6 +80,16 @@ message TokenRequest {
   bytes device_credential = 3;
 }
 
+// GET /v1/gateways -> Gateways
+//
+// Where to open the socket (frame.proto), with an access token. Gateways come
+// in the order to try them; ask again once every one has failed, rather than
+// keeping a list for later, since gateways come and go. UNAVAILABLE when none
+// is serving.
+message Gateways {
+  repeated string urls = 1;
+}
+
 // GET /v1/devices -> DeviceList (frame.proto)
 //
 // DELETE /v1/devices/{device_id} -> 204
